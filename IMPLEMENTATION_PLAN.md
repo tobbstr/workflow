@@ -210,6 +210,119 @@ func retryOnBusinessError(err error) bool {
 }
 ```
 
+### Type Aliases for IDs and Names
+
+**Decision**: Use type aliases (`WorkflowID`, `StepName`) instead of plain strings.
+
+**Rationale**:
+- Provides compile-time type safety - can't accidentally swap workflowID and stepName
+- Self-documenting code - function signatures are clearer
+- Zero runtime cost - aliases compile to underlying string type
+- Enables future extensibility - can add methods if needed
+- Prevents common mistakes in observer implementations
+
+**Usage Pattern**:
+```go
+type WorkflowID string
+type StepName string
+
+// Clear function signatures
+func (o *Observer) OnStepStart(ctx context.Context, stepName StepName)
+
+// Type-safe usage
+wf := workflow.New().
+    WithID(WorkflowID("order-processing")).
+    Step("validate", workflow.TypedStep(validateFn))
+```
+
+### Step Naming Strategy
+
+**Decision**: Steps can have optional default names via `Step.Name()`, but workflow can override.
+
+**Rationale**:
+- Supports reusable steps with canonical names
+- Composite steps (`AsStep()`, `Compose()`) can provide default names
+- Workflow maintains control - can override step's default name
+- Flexible without being complicated
+
+**API Design**:
+```go
+type Step interface {
+    Name() StepName  // Returns "" if step has no default name
+    // ...
+}
+
+// TypedStep - no default name
+func TypedStep[In, Out any](fn func(context.Context, In) (Out, error)) Step
+
+// NamedTypedStep - with default name
+func NamedTypedStep[In, Out any](name StepName, fn func(context.Context, In) (Out, error)) Step
+
+// Workflow uses step's name if available, otherwise uses parameter
+func (w *Workflow) Step(name string, step Step, opts ...StepOption) *Workflow
+```
+
+### Parallel Execution: Two Approaches
+
+**Decision**: Provide both `Parallel()` (returns `[]Out`) and `ParallelMerge()` (returns `Out`).
+
+**Rationale**:
+- Different use cases need different result handling:
+  - `Parallel()` - explicit control over aggregation
+  - `ParallelMerge()` - convenience with inline merging
+- Provide built-in mergers for common cases (FirstResult, LastResult)
+- Users can write custom merger functions for complex logic
+- Both approaches support all parallel strategies
+
+**API Design**:
+```go
+// Explicit aggregation - returns []Out
+func Parallel[In, Out any](
+    config ParallelConfig,
+    steps ...func(context.Context, In) (Out, error),
+) Step
+
+// Inline merging - returns Out
+func ParallelMerge[In, Out any](
+    config ParallelConfig,
+    merger func([]Out) (Out, error),
+    steps ...func(context.Context, In) (Out, error),
+) Step
+
+// Built-in mergers
+func FirstResult[T any]() func([]T) (T, error)
+func LastResult[T any]() func([]T) (T, error)
+func AllResults[T any]() func([]T) ([]T, error)
+```
+
+### Workflow ID Management
+
+**Decision**: Optional user-provided workflow ID with per-execution auto-generation fallback.
+
+**Rationale**:
+- Observability benefits from consistent workflow identification
+- User can set meaningful ID for monitoring/debugging
+- If not set, auto-generate unique ID per execution
+- Workflow instance can be reused with different execution IDs
+
+**API Design**:
+```go
+type Workflow struct {
+    id WorkflowID  // Optional, set via WithID()
+    // ...
+}
+
+func (w *Workflow) WithID(id WorkflowID) *Workflow
+
+func (w *Workflow) Execute(ctx context.Context, input any) (any, error) {
+    executionID := w.id
+    if executionID == "" {
+        executionID = WorkflowID(generateUUID())  // Auto-generate
+    }
+    // Use executionID in observer calls
+}
+```
+
 ### Workflow Composition: Hybrid Approach (Compose + AsStep)
 
 **Decision**: Provide both `Compose()` for inline composition and `AsStep()` for complex sub-workflows.
@@ -259,9 +372,19 @@ workflow.New().
 
 ## Core Types and Interfaces
 
+### Type Aliases
+```go
+// WorkflowID identifies a workflow for observability
+type WorkflowID string
+
+// StepName identifies a step within a workflow
+type StepName string
+```
+
 ### Workflow
 ```go
 type Workflow struct {
+    id           WorkflowID   // Optional workflow ID for observability
     steps        []*workflowStep
     inputType    reflect.Type
     outputType   reflect.Type
@@ -271,15 +394,14 @@ type Workflow struct {
 
 type workflowStep struct {
     step  Step
-    name  string
+    name  StepName
     retry *RetryConfig
 }
 
 func New() *Workflow
+func (w *Workflow) WithID(id WorkflowID) *Workflow
 func (w *Workflow) WithRetry(config RetryConfig) *Workflow
 func (w *Workflow) Step(name string, step Step, opts ...StepOption) *Workflow
-func (w *Workflow) Parallel(name string, config ParallelConfig, steps ...Step) *Workflow
-func (w *Workflow) If(name string, condition Condition, thenStep, elseStep Step) *Workflow
 func (w *Workflow) WithObserver(observer Observer) *Workflow
 func (w *Workflow) Execute(ctx context.Context, input any) (any, error)
 ```
@@ -287,19 +409,23 @@ func (w *Workflow) Execute(ctx context.Context, input any) (any, error)
 ### Step
 ```go
 type Step interface {
-    Name() string
+    Name() StepName  // Returns "" if step has no default name
     Execute(ctx context.Context, input any) (any, error)
     InputType() reflect.Type
     OutputType() reflect.Type
 }
 
+// TypedStep creates an unnamed step (Name() returns "")
 func TypedStep[In, Out any](fn func(context.Context, In) (Out, error)) Step
+
+// NamedTypedStep creates a step with a default name
+func NamedTypedStep[In, Out any](name StepName, fn func(context.Context, In) (Out, error)) Step
 ```
 
 ### Parallel Execution
 ```go
 type ParallelConfig struct {
-    Strategy ParallelStrategy
+    Strategy        ParallelStrategy
     MinSuccessCount int  // For AtLeastN strategy
 }
 
@@ -311,15 +437,31 @@ const (
     FirstSuccess                              // First successful step wins
 )
 
-// Parallel step - all sub-steps must have same input and output types
-func Parallel[In, Out any](config ParallelConfig, steps ...func(context.Context, In) (Out, error)) Step
+// Parallel executes steps concurrently and returns all results as []Out
+// User must explicitly handle aggregation in next step
+func Parallel[In, Out any](
+    config ParallelConfig,
+    steps ...func(context.Context, In) (Out, error),
+) Step  // Execute returns []Out
+
+// ParallelMerge executes steps concurrently and merges results using merger function
+// Returns single Out value
+func ParallelMerge[In, Out any](
+    config ParallelConfig,
+    merger func([]Out) (Out, error),
+    steps ...func(context.Context, In) (Out, error),
+) Step  // Execute returns Out
+
+// Built-in merger functions
+func FirstResult[T any]() func([]T) (T, error)
+func LastResult[T any]() func([]T) (T, error)
+func AllResults[T any]() func([]T) ([]T, error)  // Pass-through for explicit []T output
 ```
 
 ### Conditional Execution
 ```go
-type Condition func(input any) bool
-
-// If step - both branches must have same input and output types
+// If executes thenStep or elseStep based on condition
+// Both branches must have same input and output types
 // Branches can be any Step (TypedStep, Compose, workflow.AsStep(), etc.)
 func If[In, Out any](
     condition func(In) bool,
@@ -390,11 +532,11 @@ func Not(condition RetryCondition) RetryCondition
 ### Observability
 ```go
 type Observer interface {
-    OnWorkflowStart(ctx context.Context, workflowID string)
-    OnWorkflowComplete(ctx context.Context, workflowID string, duration time.Duration, err error)
-    OnStepStart(ctx context.Context, stepName string)
-    OnStepComplete(ctx context.Context, stepName string, duration time.Duration, err error)
-    OnStepRetry(ctx context.Context, stepName string, attempt int, err error)
+    OnWorkflowStart(ctx context.Context, workflowID WorkflowID)
+    OnWorkflowComplete(ctx context.Context, workflowID WorkflowID, duration time.Duration, err error)
+    OnStepStart(ctx context.Context, stepName StepName)
+    OnStepComplete(ctx context.Context, stepName StepName, duration time.Duration, err error)
+    OnStepRetry(ctx context.Context, stepName StepName, attempt int, err error)
 }
 
 // NoopObserver provides default implementation
@@ -409,19 +551,25 @@ type NoopObserver struct{}
 **Goal**: Basic workflow execution with type safety
 
 **Tasks**:
+- [ ] Define type aliases (`WorkflowID`, `StepName`)
 - [ ] Define core types (`Workflow`, `Step`, `stepConfig`)
-- [ ] Implement `TypedStep[In, Out]` wrapper
-- [ ] Implement `Step()` method with type validation
-- [ ] Implement `Execute()` method
+- [ ] Implement `TypedStep[In, Out]` wrapper (unnamed)
+- [ ] Implement `NamedTypedStep[In, Out]` wrapper (with default name)
+- [ ] Implement `WithID()` method for workflow identification
+- [ ] Implement `Step()` method with type validation and name handling
+- [ ] Implement `Execute()` method with workflow ID generation
 - [ ] Implement `ExecuteTyped[Out]()` helper
 - [ ] Add basic error handling
 - [ ] Unit tests for type safety validation
+- [ ] Unit tests for step naming (default name vs workflow-assigned)
 
 **Acceptance Criteria**:
 - Can create workflow with sequential steps
 - Type mismatches detected during construction (panic)
 - Workflow executes and passes data between steps
 - Context propagation works correctly
+- Step names work correctly (default from Step.Name() or workflow-assigned)
+- Workflow ID can be set or is auto-generated per execution
 
 ### Phase 2: Retry Logic
 **Goal**: Exponential backoff retry with configurable policies and conditions
@@ -463,32 +611,44 @@ type NoopObserver struct{}
 - Custom conditions can be created and used
 
 ### Phase 3: Parallel Execution
-**Goal**: Execute independent steps concurrently
+**Goal**: Execute independent steps concurrently with flexible result handling
 
 **Tasks**:
 - [ ] Define `ParallelConfig` and `ParallelStrategy`
-- [ ] Implement `Parallel[In, Out]()` step constructor
+- [ ] Implement `Parallel[In, Out]()` step constructor (returns []Out)
+- [ ] Implement `ParallelMerge[In, Out]()` step constructor (returns Out)
 - [ ] Implement parallel execution with goroutines
 - [ ] Implement `AllMustSucceed` strategy
 - [ ] Implement `AtLeastN` strategy
 - [ ] Implement `FirstSuccess` strategy
 - [ ] Add error aggregation for failures
+- [ ] Implement built-in merger functions:
+  - [ ] `FirstResult[T]()`
+  - [ ] `LastResult[T]()`
+  - [ ] `AllResults[T]()`
+- [ ] Unit tests for `Parallel` (returns []Out)
+- [ ] Unit tests for `ParallelMerge` (returns Out)
 - [ ] Unit tests for each strategy
+- [ ] Unit tests for each built-in merger
+- [ ] Unit tests for custom merger functions
 - [ ] Unit tests for context cancellation
 
 **Acceptance Criteria**:
 - All parallel steps receive same input
 - Steps execute concurrently
+- `Parallel` returns []Out for explicit aggregation
+- `ParallelMerge` returns Out using merger function
 - Results collected according to strategy
 - First error cancels other goroutines (for AllMustSucceed)
 - Context cancellation propagates to all parallel steps
+- Built-in mergers work correctly
+- Merger errors are properly propagated
 
 ### Phase 4: Conditional Execution & Composition
 **Goal**: Branch workflow based on runtime conditions and support nested workflows
 
 **Tasks**:
-- [ ] Define `Condition` type
-- [ ] Implement `If[In, Out]()` step constructor (accepts Steps, not functions)
+- [ ] Implement `If[In, Out]()` step constructor
 - [ ] Implement `Compose[In, Out]()` for functional composition
 - [ ] Implement `AsStep()` method on Workflow
 - [ ] Implement conditional evaluation
@@ -498,9 +658,10 @@ type NoopObserver struct{}
 - [ ] Unit tests for condition evaluation
 - [ ] Unit tests for nested workflows (3+ levels deep)
 - [ ] Unit tests for Compose with type validation
+- [ ] Unit tests for mixing Compose and AsStep
 
 **Acceptance Criteria**:
-- Condition evaluated with correct input
+- Condition evaluated with correct typed input
 - Only selected branch executes
 - Both branches type-checked at construction
 - Compose() validates step type compatibility
@@ -508,6 +669,7 @@ type NoopObserver struct{}
 - Nested workflows execute correctly (unlimited depth)
 - Works with other step types (parallel, retry)
 - Observers track nested workflow steps
+- Step names propagate correctly through composition
 
 ### Phase 5: Observability
 **Goal**: Opt-in hooks for metrics and tracing
@@ -534,11 +696,14 @@ type NoopObserver struct{}
 
 **Tasks**:
 - [ ] Write package documentation
-- [ ] Write API documentation for all exported types
+- [ ] Write API documentation for all exported types (including type aliases)
+- [ ] Document Step.Name() behavior (returns "" if unnamed)
+- [ ] Document WorkflowID generation (user-provided or auto-generated)
 - [ ] Create example: Simple sequential workflow
 - [ ] Create example: Workflow with retry policies and conditions
 - [ ] Create example: Reusable retry policies and advanced conditions
-- [ ] Create example: Parallel execution
+- [ ] Create example: Parallel execution (both Parallel and ParallelMerge)
+- [ ] Create example: Built-in mergers (FirstResult, LastResult, AllResults)
 - [ ] Create example: Conditional branching (simple)
 - [ ] Create example: Tree-like workflow with nested branches (Compose + AsStep)
 - [ ] Create example: Complete microservice handler with observability
@@ -548,11 +713,15 @@ type NoopObserver struct{}
 
 **Acceptance Criteria**:
 - All exported types have godoc comments
+- Type aliases (WorkflowID, StepName) properly documented
 - Examples compile and run successfully
 - README provides clear getting started guide
 - Examples cover all major features including composition and retry conditions
+- Parallel execution examples show both Parallel and ParallelMerge
+- Built-in merger examples demonstrate common use cases
 - Tree-like workflow example demonstrates 3+ levels of nesting
 - Retry condition examples show gRPC, HTTP, and custom conditions
+- Observer examples use correct type aliases
 
 ## Usage Examples
 
@@ -751,29 +920,93 @@ func HandleWithNoContextRetry(ctx context.Context, input Input) (Output, error) 
 }
 ```
 
-### Example 4: Parallel Execution
+### Example 4: Parallel Execution - Both Approaches
+
+#### Approach 1: Parallel with Explicit Aggregation
 ```go
 type UserContext struct {
     UserID int
 }
 
-type EnrichedContext struct {
-    UserID      int
-    Profile     UserProfile
-    Permissions []Permission
-    Preferences UserPreferences
+type UserProfile struct {
+    UserID   int
+    Name     string
+    Email    string
 }
 
-func HandleGetUserContext(ctx context.Context, input UserContext) (EnrichedContext, error) {
+func HandleGetUserProfiles(ctx context.Context, input UserContext) (UserProfile, error) {
     wf := workflow.New().
-        Step("parallel_fetch", workflow.Parallel[UserContext, EnrichedContext](
+        // Parallel returns []UserProfile
+        Step("fetch_parallel", workflow.Parallel[UserContext, UserProfile](
+            workflow.ParallelConfig{Strategy: workflow.FirstSuccess},
+            fetchFromPrimaryDB,
+            fetchFromReplicaDB,
+            fetchFromCache,
+        )).
+        // Next step receives []UserProfile and picks first
+        Step("select", workflow.TypedStep(func(ctx context.Context, profiles []UserProfile) (UserProfile, error) {
+            if len(profiles) == 0 {
+                return UserProfile{}, errors.New("no profiles fetched")
+            }
+            return profiles[0], nil
+        }))
+    
+    return workflow.ExecuteTyped[UserProfile](ctx, wf, input)
+}
+```
+
+#### Approach 2: ParallelMerge with Built-in Merger
+```go
+func HandleGetUserProfileMerged(ctx context.Context, input UserContext) (UserProfile, error) {
+    wf := workflow.New().
+        // ParallelMerge returns UserProfile directly
+        Step("fetch_parallel", workflow.ParallelMerge[UserContext, UserProfile](
+            workflow.ParallelConfig{Strategy: workflow.FirstSuccess},
+            workflow.FirstResult[UserProfile](),  // Built-in merger
+            fetchFromPrimaryDB,
+            fetchFromReplicaDB,
+            fetchFromCache,
+        )).
+        Step("enrich", workflow.TypedStep(enrichProfile))  // Receives single UserProfile
+    
+    return workflow.ExecuteTyped[UserProfile](ctx, wf, input)
+}
+```
+
+#### Approach 3: ParallelMerge with Custom Merger
+```go
+type DataFetchResult struct {
+    Source string
+    Data   []byte
+}
+
+func HandleParallelWithCustomMerger(ctx context.Context, input Request) (Result, error) {
+    wf := workflow.New().
+        Step("fetch_from_multiple", workflow.ParallelMerge[Request, DataFetchResult](
             workflow.ParallelConfig{Strategy: workflow.AllMustSucceed},
-            fetchProfile,
-            fetchPermissions,
-            fetchPreferences,
+            // Custom merger - combine results from all sources
+            func(results []DataFetchResult) (DataFetchResult, error) {
+                if len(results) == 0 {
+                    return DataFetchResult{}, errors.New("no results")
+                }
+                // Merge logic: combine all data
+                var combined []byte
+                sources := []string{}
+                for _, r := range results {
+                    combined = append(combined, r.Data...)
+                    sources = append(sources, r.Source)
+                }
+                return DataFetchResult{
+                    Source: strings.Join(sources, ","),
+                    Data:   combined,
+                }, nil
+            },
+            fetchFromAPI1,
+            fetchFromAPI2,
+            fetchFromAPI3,
         ))
     
-    return workflow.ExecuteTyped[EnrichedContext](ctx, wf, input)
+    return workflow.ExecuteTyped[Result](ctx, wf, input)
 }
 ```
 
@@ -1053,16 +1286,21 @@ The implementation will be considered successful when:
 7. ✅ At least 7 realistic usage examples included (covering all major features)
 8. ✅ Retry conditions work with gRPC and HTTP error types
 9. ✅ Tree-like workflows support unlimited nesting depth
+10. ✅ Type aliases provide compile-time safety for IDs and names
+11. ✅ Both Parallel and ParallelMerge work correctly with all strategies
+12. ✅ Built-in mergers (FirstResult, LastResult, AllResults) work as expected
+13. ✅ Step naming works correctly (default names and workflow-assigned names)
+14. ✅ Workflow ID can be set explicitly or auto-generated
 
 ## Timeline
 
 Estimated implementation time: **3-4 weeks**
 
-- Phase 1: 2-3 days
+- Phase 1: 3 days (includes type aliases, named steps, workflow ID)
 - Phase 2: 3-4 days (includes retry conditions and built-in helpers)
-- Phase 3: 3-4 days
+- Phase 3: 4-5 days (includes both Parallel and ParallelMerge with mergers)
 - Phase 4: 3 days (includes Compose and AsStep)
-- Phase 5: 2-3 days
-- Phase 6: 3-4 days (includes additional retry condition examples)
+- Phase 5: 2-3 days (includes type aliases in observers)
+- Phase 6: 3-4 days (includes parallel execution examples and type alias docs)
 - Buffer for testing and refinement: 3-4 days
 

@@ -45,7 +45,7 @@ type workflowStep struct {
 //		Step("step2", workflow.TypedStep(fn2))
 func New() *Workflow {
 	return &Workflow{
-		steps: make([]*workflowStep, 0),
+		steps: make([]*workflowStep, 0, 4),
 	}
 }
 

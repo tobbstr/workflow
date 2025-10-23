@@ -596,6 +596,56 @@ func BenchmarkWorkflowWithRetry(b *testing.B) {
 	}
 }
 
+// BenchmarkWorkflowConstruction benchmarks workflow construction overhead.
+func BenchmarkWorkflowConstruction(b *testing.B) {
+	b.Run("SimpleWorkflow", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			_ = New().
+				WithID(WorkflowID("simple")).
+				Step("double", TypedStep(func(ctx context.Context, input int) (int, error) {
+					return input * 2, nil
+				})).
+				Step("increment", TypedStep(func(ctx context.Context, input int) (int, error) {
+					return input + 1, nil
+				})).
+				Step("format", TypedStep(func(ctx context.Context, input int) (string, error) {
+					return fmt.Sprintf("result: %d", input), nil
+				}))
+		}
+	})
+
+	b.Run("ComplexWorkflow", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			_ = New().
+				WithID(WorkflowID("complex")).
+				Step("step1", TypedStep(func(ctx context.Context, input int) (int, error) {
+					return input, nil
+				})).
+				Step("step2", TypedStep(func(ctx context.Context, input int) (int, error) {
+					return input, nil
+				})).
+				Step("step3", TypedStep(func(ctx context.Context, input int) (int, error) {
+					return input, nil
+				})).
+				Step("step4", TypedStep(func(ctx context.Context, input int) (int, error) {
+					return input, nil
+				})).
+				Step("step5", TypedStep(func(ctx context.Context, input int) (int, error) {
+					return input, nil
+				})).
+				Step("step6", TypedStep(func(ctx context.Context, input int) (string, error) {
+					return fmt.Sprintf("%d", input), nil
+				}))
+		}
+	})
+}
+
 // BenchmarkSimpleWorkflow benchmarks a simple sequential workflow for baseline comparison.
 func BenchmarkSimpleWorkflow(b *testing.B) {
 	wf := New().

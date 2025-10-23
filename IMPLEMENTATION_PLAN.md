@@ -237,16 +237,25 @@ wf := workflow.New().
 
 ### Step Naming Strategy
 
-**Decision**: Steps can have optional default names via `Step.Name()`, but workflow can override.
+**Decision**: Steps can have optional default names via `Step.Name()`, with explicit control via workflow.
 
 **Rationale**:
 - Supports reusable steps with canonical names
 - Composite steps (`AsStep()`, `Compose()`) can provide default names
 - Workflow maintains control - can override step's default name
-- Flexible without being complicated
+- `Auto` constant makes intent explicit when inheriting step's name
+- More readable than empty string magic value
 
 **API Design**:
 ```go
+type StepName string
+
+const (
+    // Auto uses the step's default name from Step.Name().
+    // Panics if the step has no default name.
+    Auto StepName = ""
+)
+
 type Step interface {
     Name() StepName  // Returns "" if step has no default name
     // ...
@@ -258,8 +267,27 @@ func TypedStep[In, Out any](fn func(context.Context, In) (Out, error)) Step
 // NamedTypedStep - with default name
 func NamedTypedStep[In, Out any](name StepName, fn func(context.Context, In) (Out, error)) Step
 
-// Workflow uses step's name if available, otherwise uses parameter
-func (w *Workflow) Step(name string, step Step, opts ...StepOption) *Workflow
+// Step adds a step to the workflow
+// If name is Auto, uses step.Name() (panics if step has no default name)
+// Otherwise, uses the provided name
+func (w *Workflow) Step(name StepName, step Step, opts ...StepOption) *Workflow
+```
+
+**Usage Pattern**:
+```go
+// Explicit naming
+wf.Step("validate", workflow.TypedStep(validateFn))
+
+// Auto: inherit from step's default name
+var AuthStep = workflow.NamedTypedStep("authenticate", authFn)
+wf.Step(workflow.Auto, AuthStep)  // Uses "authenticate"
+
+// Override step's default name
+wf.Step("custom_auth", AuthStep)  // Uses "custom_auth"
+
+// Sub-workflows use their workflow ID as default name
+subWf := workflow.New().WithID(WorkflowID("payment"))
+wf.Step(workflow.Auto, subWf.AsStep())  // Uses "payment"
 ```
 
 ### Parallel Execution: Two Approaches
@@ -379,6 +407,12 @@ type WorkflowID string
 
 // StepName identifies a step within a workflow
 type StepName string
+
+const (
+    // Auto uses the step's default name from Step.Name().
+    // Panics if the step has no default name.
+    Auto StepName = ""
+)
 ```
 
 ### Workflow
@@ -401,7 +435,7 @@ type workflowStep struct {
 func New() *Workflow
 func (w *Workflow) WithID(id WorkflowID) *Workflow
 func (w *Workflow) WithRetry(config RetryConfig) *Workflow
-func (w *Workflow) Step(name string, step Step, opts ...StepOption) *Workflow
+func (w *Workflow) Step(name StepName, step Step, opts ...StepOption) *Workflow
 func (w *Workflow) WithObserver(observer Observer) *Workflow
 func (w *Workflow) Execute(ctx context.Context, input any) (any, error)
 ```
@@ -1089,7 +1123,8 @@ type ProcessedOrder struct {
 func HandleOrderProcessing(ctx context.Context, order OrderContext) (ProcessedOrder, error) {
     // Build nested workflow for shipping decision (premium users only)
     shippingDecision := workflow.New().
-        If("shipping_type", 
+        WithID(WorkflowID("shipping_decision")).
+        Step("route", workflow.If[OrderContext, FulfillmentResult](
             func(o OrderContext) bool { return o.IsExpress },
             // Express shipping branch
             workflow.Compose[OrderContext, FulfillmentResult](
@@ -1101,21 +1136,24 @@ func HandleOrderProcessing(ctx context.Context, order OrderContext) (ProcessedOr
                 workflow.TypedStep(standardFulfillment),
                 workflow.TypedStep(priorityNotify),
             ),
-        )
+        ))
     
     // Build premium user workflow
     premiumFlow := workflow.New().
-        Step("shipping", shippingDecision.AsStep()).
+        WithID(WorkflowID("premium_flow")).
+        Step(workflow.Auto, shippingDecision.AsStep()).  // Uses "shipping_decision"
         Step("discount", workflow.TypedStep(applyPremiumDiscount))
     
     // Build standard user workflow
     standardFlow := workflow.New().
+        WithID(WorkflowID("standard_flow")).
         Step("inventory", workflow.TypedStep(checkInventory)).
         Step("fulfill", workflow.TypedStep(standardFulfillment)).
         Step("notify", workflow.TypedStep(standardNotify))
     
     // Main workflow with tree-like structure
     wf := workflow.New().
+        WithID(WorkflowID("order_processing")).
         WithRetry(workflow.RetryConfig{
             MaxAttempts:  3,
             InitialDelay: 100 * time.Millisecond,
@@ -1123,11 +1161,11 @@ func HandleOrderProcessing(ctx context.Context, order OrderContext) (ProcessedOr
             Multiplier:   2.0,
         }).
         Step("validate", workflow.TypedStep(validateOrder)).
-        If("process_by_user_type",
+        Step("process", workflow.If[OrderContext, ProcessedOrder](
             func(o OrderContext) bool { return o.IsPremium },
             premiumFlow.AsStep(),    // Premium path with nested shipping decision
             standardFlow.AsStep(),   // Standard path
-        ).
+        )).
         Step("record", workflow.TypedStep(recordOrder))
     
     return workflow.ExecuteTyped[ProcessedOrder](ctx, wf, order)

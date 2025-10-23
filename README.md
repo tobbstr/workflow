@@ -25,24 +25,38 @@ go get github.com/tobbstr/workflow
 
 ## Quick Start
 
+**Important**: Workflow construction is expensive and should happen during service initialization, not inside endpoint handlers. Build your workflows once and reuse them across requests.
+
 ```go
 package main
 
 import (
     "context"
+    "encoding/json"
     "fmt"
+    "log"
+    "net/http"
     "time"
 
     "github.com/tobbstr/workflow"
 )
 
 type User struct {
-    ID   int
-    Name string
+    ID    int    `json:"id"`
+    Email string `json:"email"`
 }
 
-func main() {
-    // Define a simple workflow
+type CreateUserRequest struct {
+    Email string `json:"email"`
+}
+
+// UserController constructs the workflow once during initialization
+type UserController struct {
+    createUserWorkflow *workflow.Workflow
+}
+
+func NewUserController() *UserController {
+    // Build the workflow during service initialization (expensive operation)
     wf := workflow.New().
         WithID(workflow.WorkflowID("create-user")).
         WithRetry(workflow.RetryConfig{
@@ -51,21 +65,42 @@ func main() {
             MaxDelay:     5 * time.Second,
             Multiplier:   2.0,
         }).
-        Step("validate", workflow.TypedStep(validateInput)).
+        Step("validate", workflow.TypedStep(validateEmail)).
         Step("create", workflow.TypedStep(createUser)).
         Step("notify", workflow.TypedStep(sendNotification))
 
-    // Execute the workflow
-    ctx := context.Background()
-    result, err := workflow.ExecuteTyped[User](ctx, wf, "john@example.com")
-    if err != nil {
-        panic(err)
-    }
-
-    fmt.Printf("Created user: %+v\n", result)
+    return &UserController{createUserWorkflow: wf}
 }
 
-func validateInput(ctx context.Context, email string) (string, error) {
+// CreateUser is an HTTP handler that reuses the pre-built workflow
+func (c *UserController) CreateUser(w http.ResponseWriter, r *http.Request) {
+    var req CreateUserRequest
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        http.Error(w, "invalid request", http.StatusBadRequest)
+        return
+    }
+
+    // Execute the pre-built workflow (fast operation)
+    user, err := workflow.ExecuteTyped[User](r.Context(), c.createUserWorkflow, req.Email)
+    if err != nil {
+        log.Printf("creating user: %v", err)
+        http.Error(w, "failed to create user", http.StatusInternalServerError)
+        return
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(user)
+}
+
+func main() {
+    // Initialize controller with pre-built workflow
+    userController := NewUserController()
+
+    http.HandleFunc("/users", userController.CreateUser)
+    log.Fatal(http.ListenAndServe(":8080", nil))
+}
+
+func validateEmail(ctx context.Context, email string) (string, error) {
     if email == "" {
         return "", fmt.Errorf("email is required")
     }
@@ -73,11 +108,13 @@ func validateInput(ctx context.Context, email string) (string, error) {
 }
 
 func createUser(ctx context.Context, email string) (User, error) {
-    return User{ID: 123, Name: email}, nil
+    // Simulate database call
+    return User{ID: 123, Email: email}, nil
 }
 
 func sendNotification(ctx context.Context, user User) (User, error) {
-    fmt.Printf("Sending notification to user %d\n", user.ID)
+    // Simulate notification service call
+    log.Printf("Sending notification to user %d", user.ID)
     return user, nil
 }
 ```

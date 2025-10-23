@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNew(t *testing.T) {
@@ -356,6 +357,271 @@ func TestExecuteTyped(t *testing.T) {
 			t.Errorf("expected original error, got %v", err)
 		}
 	})
+}
+
+// Benchmark tests
+
+// BenchmarkWorkflowExecution benchmarks workflow execution with memory allocations.
+// Uses a complex workflow with sequential steps, conditionals, and parallel execution
+// to simulate realistic microservice endpoint logic.
+func BenchmarkWorkflowExecution(b *testing.B) {
+	// Setup test data types
+	type UserInput struct {
+		ID        int
+		Username  string
+		Email     string
+		IsPremium bool
+	}
+
+	type ValidationResult struct {
+		UserInput
+		IsValid bool
+		Errors  []string
+	}
+
+	type EnrichmentResult struct {
+		ValidationResult
+		Metadata map[string]string
+	}
+
+	type ProcessingResult struct {
+		EnrichmentResult
+		ProcessedData []string
+	}
+
+	// Define workflow steps
+	validateInput := func(ctx context.Context, input UserInput) (ValidationResult, error) {
+		result := ValidationResult{
+			UserInput: input,
+			IsValid:   true,
+			Errors:    make([]string, 0),
+		}
+
+		// Simulate validation logic
+		if input.Username == "" {
+			result.IsValid = false
+			result.Errors = append(result.Errors, "username required")
+		}
+		if input.Email == "" {
+			result.IsValid = false
+			result.Errors = append(result.Errors, "email required")
+		}
+
+		return result, nil
+	}
+
+	enrichWithMetadata := func(ctx context.Context, input ValidationResult) (EnrichmentResult, error) {
+		result := EnrichmentResult{
+			ValidationResult: input,
+			Metadata: map[string]string{
+				"timestamp": "2025-10-23T10:00:00Z",
+				"source":    "api",
+				"version":   "v1",
+			},
+		}
+		return result, nil
+	}
+
+	// Parallel enrichment steps for premium users
+	fetchUserPreferences := func(ctx context.Context, input EnrichmentResult) (map[string]string, error) {
+		return map[string]string{
+			"theme":    "dark",
+			"language": "en",
+		}, nil
+	}
+
+	fetchUserHistory := func(ctx context.Context, input EnrichmentResult) (map[string]string, error) {
+		return map[string]string{
+			"last_login":  "2025-10-22",
+			"login_count": "42",
+		}, nil
+	}
+
+	fetchUserSettings := func(ctx context.Context, input EnrichmentResult) (map[string]string, error) {
+		return map[string]string{
+			"notifications": "enabled",
+			"2fa":           "enabled",
+		}, nil
+	}
+
+	processWithEnrichment := func(ctx context.Context, input EnrichmentResult) (ProcessingResult, error) {
+		// Execute parallel enrichment for premium users
+		if input.IsPremium {
+			parallelStep := Parallel[EnrichmentResult, map[string]string](
+				ParallelConfig{Strategy: AllMustSucceed},
+				fetchUserPreferences,
+				fetchUserHistory,
+				fetchUserSettings,
+			)
+
+			enrichmentResults, err := parallelStep.Execute(ctx, input)
+			if err != nil {
+				return ProcessingResult{}, fmt.Errorf("enriching premium user data: %w", err)
+			}
+
+			// Merge enrichment results
+			enrichments, ok := enrichmentResults.([]map[string]string)
+			if ok {
+				for _, e := range enrichments {
+					for k, v := range e {
+						input.Metadata[k] = v
+					}
+				}
+			}
+		}
+
+		result := ProcessingResult{
+			EnrichmentResult: input,
+			ProcessedData:    make([]string, 0, 5),
+		}
+
+		// Simulate data processing
+		result.ProcessedData = append(result.ProcessedData,
+			fmt.Sprintf("user_%d", input.ID),
+			fmt.Sprintf("username_%s", input.Username),
+			fmt.Sprintf("email_%s", input.Email),
+		)
+
+		return result, nil
+	}
+
+	formatOutput := func(ctx context.Context, input ProcessingResult) (string, error) {
+		return fmt.Sprintf("Processed user %s (ID: %d) - Valid: %v",
+			input.Username, input.ID, input.IsValid), nil
+	}
+
+	// Build workflow with conditional branching
+	premiumBranch := Compose[ValidationResult, ProcessingResult](
+		TypedStep(enrichWithMetadata),
+		TypedStep(processWithEnrichment),
+	)
+
+	standardBranch := Compose[ValidationResult, ProcessingResult](
+		TypedStep(enrichWithMetadata),
+		TypedStep(processWithEnrichment),
+	)
+
+	wf := New().
+		WithID(WorkflowID("user-processing")).
+		Step("validate", TypedStep(validateInput)).
+		Step("process", If[ValidationResult, ProcessingResult](
+			func(v ValidationResult) bool { return v.IsPremium },
+			premiumBranch,
+			standardBranch,
+		)).
+		Step("format", TypedStep(formatOutput))
+
+	// Test data
+	premiumUser := UserInput{
+		ID:        1,
+		Username:  "premium_user",
+		Email:     "premium@example.com",
+		IsPremium: true,
+	}
+
+	standardUser := UserInput{
+		ID:        2,
+		Username:  "standard_user",
+		Email:     "standard@example.com",
+		IsPremium: false,
+	}
+
+	b.Run("PremiumUser", func(b *testing.B) {
+		ctx := context.Background()
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			_, err := ExecuteTyped[string](ctx, wf, premiumUser)
+			if err != nil {
+				b.Fatalf("workflow execution failed: %v", err)
+			}
+		}
+	})
+
+	b.Run("StandardUser", func(b *testing.B) {
+		ctx := context.Background()
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			_, err := ExecuteTyped[string](ctx, wf, standardUser)
+			if err != nil {
+				b.Fatalf("workflow execution failed: %v", err)
+			}
+		}
+	})
+}
+
+// BenchmarkWorkflowWithRetry benchmarks workflow execution with retry configuration.
+func BenchmarkWorkflowWithRetry(b *testing.B) {
+	type Request struct {
+		ID      int
+		Payload string
+	}
+
+	type Response struct {
+		ID     int
+		Result string
+	}
+
+	processRequest := func(ctx context.Context, input Request) (Response, error) {
+		return Response{
+			ID:     input.ID,
+			Result: fmt.Sprintf("processed: %s", input.Payload),
+		}, nil
+	}
+
+	wf := New().
+		WithID(WorkflowID("retry-test")).
+		WithRetry(RetryConfig{
+			MaxAttempts:  3,
+			InitialDelay: 10 * time.Millisecond,
+			MaxDelay:     100 * time.Millisecond,
+			Multiplier:   2.0,
+		}).
+		Step("process", TypedStep(processRequest))
+
+	ctx := context.Background()
+	input := Request{ID: 1, Payload: "test data"}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, err := ExecuteTyped[Response](ctx, wf, input)
+		if err != nil {
+			b.Fatalf("workflow execution failed: %v", err)
+		}
+	}
+}
+
+// BenchmarkSimpleWorkflow benchmarks a simple sequential workflow for baseline comparison.
+func BenchmarkSimpleWorkflow(b *testing.B) {
+	wf := New().
+		WithID(WorkflowID("simple")).
+		Step("double", TypedStep(func(ctx context.Context, input int) (int, error) {
+			return input * 2, nil
+		})).
+		Step("increment", TypedStep(func(ctx context.Context, input int) (int, error) {
+			return input + 1, nil
+		})).
+		Step("format", TypedStep(func(ctx context.Context, input int) (string, error) {
+			return fmt.Sprintf("result: %d", input), nil
+		}))
+
+	ctx := context.Background()
+	input := 5
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, err := ExecuteTyped[string](ctx, wf, input)
+		if err != nil {
+			b.Fatalf("workflow execution failed: %v", err)
+		}
+	}
 }
 
 // Helper functions for type comparisons

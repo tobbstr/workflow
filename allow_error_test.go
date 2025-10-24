@@ -14,7 +14,7 @@ var (
 	ErrPermissionDenied   = errors.New("permission denied")
 )
 
-func TestAllowError(t *testing.T) {
+func TestAllowErrorWithFallback(t *testing.T) {
 	t.Run("bypasses error and continues workflow", func(t *testing.T) {
 		called := make([]string, 0)
 
@@ -30,7 +30,7 @@ func TestAllowError(t *testing.T) {
 
 		wf := New().
 			Step("step1", TypedStep(step1),
-				AllowError(
+				AllowErrorWithFallback(
 					func(err error) bool { return errors.Is(err, ErrTransitionRejected) },
 					func(ctx context.Context, input string, err error) string {
 						return input // Return original input
@@ -59,7 +59,7 @@ func TestAllowError(t *testing.T) {
 
 		wf := New().
 			Step("step1", TypedStep(step1),
-				AllowError(
+				AllowErrorWithFallback(
 					func(err error) bool { return errors.Is(err, ErrTransitionRejected) },
 					func(ctx context.Context, input string, err error) string {
 						return input
@@ -86,7 +86,7 @@ func TestAllowError(t *testing.T) {
 
 		wf := New().
 			Step("step1", TypedStep(step1),
-				AllowError(
+				AllowErrorWithFallback(
 					func(err error) bool { return true },
 					func(ctx context.Context, input string, err error) int {
 						capturedInput = input
@@ -129,7 +129,7 @@ func TestAllowError(t *testing.T) {
 				Multiplier:   2.0,
 			}).
 			Step("step1", TypedStep(step1),
-				AllowError(
+				AllowErrorWithFallback(
 					func(err error) bool { return errors.Is(err, ErrTransitionRejected) },
 					func(ctx context.Context, input string, err error) string {
 						return "fallback"
@@ -167,7 +167,7 @@ func TestAllowError(t *testing.T) {
 				Multiplier:   2.0,
 			}).
 			Step("step1", TypedStep(step1),
-				AllowError(
+				AllowErrorWithFallback(
 					func(err error) bool { return errors.Is(err, ErrTransitionRejected) },
 					func(ctx context.Context, input string, err error) string {
 						return "fallback"
@@ -202,7 +202,7 @@ func TestAllowError(t *testing.T) {
 
 		wf := New().
 			Step("step1", TypedStep(step1),
-				AllowError(
+				AllowErrorWithFallback(
 					func(err error) bool { return errors.Is(err, ErrNotFound) },
 					func(ctx context.Context, input User, err error) User {
 						// Return input with default values
@@ -237,7 +237,7 @@ func TestAllowError(t *testing.T) {
 
 		wf := New().
 			Step("step1", TypedStep(step1),
-				AllowError(
+				AllowErrorWithFallback(
 					func(err error) bool { return true },
 					func(ctx context.Context, input string, err error) string {
 						value := ctx.Value(key)
@@ -274,14 +274,14 @@ func TestAllowError(t *testing.T) {
 
 		wf := New().
 			Step("step1", TypedStep(step1),
-				AllowError(
+				AllowErrorWithFallback(
 					func(err error) bool { return errors.Is(err, ErrTransitionRejected) },
 					func(ctx context.Context, input string, err error) string {
 						return input + "-1"
 					},
 				)).
 			Step("step2", TypedStep(step2),
-				AllowError(
+				AllowErrorWithFallback(
 					func(err error) bool { return errors.Is(err, ErrNotFound) },
 					func(ctx context.Context, input string, err error) string {
 						return input + "-2"
@@ -321,7 +321,7 @@ func TestAllowError(t *testing.T) {
 					MaxDelay:     10 * time.Millisecond,
 					Multiplier:   2.0,
 				}),
-				AllowError(
+				AllowErrorWithFallback(
 					func(err error) bool { return errors.Is(err, ErrTransitionRejected) },
 					func(ctx context.Context, input string, err error) string {
 						return "fallback"
@@ -356,7 +356,7 @@ func TestAllowError(t *testing.T) {
 			}).
 			Step("step1", TypedStep(step1),
 				NoRetry(),
-				AllowError(
+				AllowErrorWithFallback(
 					func(err error) bool { return errors.Is(err, ErrTransitionRejected) },
 					func(ctx context.Context, input string, err error) string {
 						return "fallback"
@@ -375,7 +375,7 @@ func TestAllowError(t *testing.T) {
 	})
 }
 
-func TestAllowError_ObserverIntegration(t *testing.T) {
+func TestAllowErrorWithFallback_ObserverIntegration(t *testing.T) {
 	t.Run("notifies observer when error is allowed", func(t *testing.T) {
 		obs := &testObserver{}
 
@@ -386,7 +386,7 @@ func TestAllowError_ObserverIntegration(t *testing.T) {
 		wf := New().
 			WithObserver(obs).
 			Step("step1", TypedStep(step1),
-				AllowError(
+				AllowErrorWithFallback(
 					func(err error) bool { return errors.Is(err, ErrTransitionRejected) },
 					func(ctx context.Context, input string, err error) string {
 						return "fallback"
@@ -421,7 +421,7 @@ func TestAllowError_ObserverIntegration(t *testing.T) {
 		wf := New().
 			WithObserver(obs).
 			Step("step1", TypedStep(step1),
-				AllowError(
+				AllowErrorWithFallback(
 					func(err error) bool { return errors.Is(err, ErrTransitionRejected) },
 					func(ctx context.Context, input string, err error) string {
 						return "fallback"
@@ -448,7 +448,7 @@ func TestAllowError_ObserverIntegration(t *testing.T) {
 		wf := New().
 			WithObserver(obs).
 			Step("step1", TypedStep(step1),
-				AllowError(
+				AllowErrorWithFallback(
 					func(err error) bool { return errors.Is(err, ErrTransitionRejected) },
 					func(ctx context.Context, input string, err error) string {
 						return "fallback"
@@ -492,7 +492,222 @@ func (o *testObserver) OnStepComplete(ctx context.Context, stepName StepName, du
 	o.lastCompleteError = err
 }
 
-func TestAllowError_FSMUseCase(t *testing.T) {
+func TestAllowErrors(t *testing.T) {
+	t.Run("allows single error and passthroughs input", func(t *testing.T) {
+		step1 := func(ctx context.Context, input string) (string, error) {
+			return "", ErrTransitionRejected
+		}
+
+		step2 := func(ctx context.Context, input string) (string, error) {
+			return "final: " + input, nil
+		}
+
+		wf := New().
+			Step("step1", TypedStep(step1),
+				AllowErrors[string](ErrTransitionRejected)).
+			Step("step2", TypedStep(step2))
+
+		result, err := ExecuteTyped[string](context.Background(), wf, "test")
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		if result != "final: test" {
+			t.Errorf("expected 'final: test', got %q", result)
+		}
+	})
+
+	t.Run("allows multiple errors", func(t *testing.T) {
+		testCases := []struct {
+			name      string
+			errReturn error
+			wantErr   bool
+		}{
+			{"allows ErrTransitionRejected", ErrTransitionRejected, false},
+			{"allows ErrNotFound", ErrNotFound, false},
+			{"allows ErrPermissionDenied", ErrPermissionDenied, false},
+			{"rejects other error", errors.New("unknown error"), true},
+		}
+
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				step1 := func(ctx context.Context, input string) (string, error) {
+					return "", tc.errReturn
+				}
+
+				wf := New().
+					Step("step1", TypedStep(step1),
+						AllowErrors[string](ErrTransitionRejected, ErrNotFound, ErrPermissionDenied))
+
+				_, err := ExecuteTyped[string](context.Background(), wf, "test")
+				if tc.wantErr && err == nil {
+					t.Error("expected error, got nil")
+				}
+				if !tc.wantErr && err != nil {
+					t.Errorf("expected no error, got %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("works with complex types", func(t *testing.T) {
+		type User struct {
+			ID   int
+			Name string
+		}
+
+		step1 := func(ctx context.Context, user User) (User, error) {
+			return User{}, ErrNotFound
+		}
+
+		step2 := func(ctx context.Context, user User) (User, error) {
+			user.Name = "updated"
+			return user, nil
+		}
+
+		wf := New().
+			Step("step1", TypedStep(step1),
+				AllowErrors[User](ErrNotFound)).
+			Step("step2", TypedStep(step2))
+
+		input := User{ID: 123, Name: "original"}
+		result, err := ExecuteTyped[User](context.Background(), wf, input)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		// Input should be passed through unchanged from step1
+		if result.ID != 123 {
+			t.Errorf("expected ID 123, got %d", result.ID)
+		}
+		if result.Name != "updated" {
+			t.Errorf("expected name 'updated', got %q", result.Name)
+		}
+	})
+
+	t.Run("does not trigger retry when error is allowed", func(t *testing.T) {
+		attemptCount := 0
+
+		step1 := func(ctx context.Context, input string) (string, error) {
+			attemptCount++
+			return "", ErrTransitionRejected
+		}
+
+		wf := New().
+			WithRetry(RetryConfig{
+				MaxAttempts:  5,
+				InitialDelay: 1 * time.Millisecond,
+				MaxDelay:     10 * time.Millisecond,
+				Multiplier:   2.0,
+			}).
+			Step("step1", TypedStep(step1),
+				AllowErrors[string](ErrTransitionRejected))
+
+		result, err := ExecuteTyped[string](context.Background(), wf, "test")
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		if result != "test" {
+			t.Errorf("expected 'test', got %q", result)
+		}
+
+		// Should only execute once, not retry
+		if attemptCount != 1 {
+			t.Errorf("expected 1 attempt, got %d", attemptCount)
+		}
+	})
+
+	t.Run("integrates with observer", func(t *testing.T) {
+		obs := &testObserver{}
+
+		step1 := func(ctx context.Context, input string) (string, error) {
+			return "", ErrNotFound
+		}
+
+		wf := New().
+			WithObserver(obs).
+			Step("step1", TypedStep(step1),
+				AllowErrors[string](ErrNotFound))
+
+		_, err := ExecuteTyped[string](context.Background(), wf, "test")
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		if obs.errorAllowedCount != 1 {
+			t.Errorf("expected 1 error allowed notification, got %d", obs.errorAllowedCount)
+		}
+
+		if !errors.Is(obs.lastAllowedError, ErrNotFound) {
+			t.Errorf("expected ErrNotFound, got %v", obs.lastAllowedError)
+		}
+	})
+
+	t.Run("empty error list allows nothing", func(t *testing.T) {
+		step1 := func(ctx context.Context, input string) (string, error) {
+			return "", ErrTransitionRejected
+		}
+
+		wf := New().
+			Step("step1", TypedStep(step1),
+				AllowErrors[string]()) // No errors specified
+
+		_, err := ExecuteTyped[string](context.Background(), wf, "test")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+
+		if !errors.Is(err, ErrTransitionRejected) {
+			t.Errorf("expected ErrTransitionRejected, got %v", err)
+		}
+	})
+
+	t.Run("FSM use case with AllowErrors", func(t *testing.T) {
+		type State struct {
+			Name string
+			Path []string
+		}
+
+		tryPrimary := func(ctx context.Context, state State) (State, error) {
+			return State{}, ErrTransitionRejected
+		}
+
+		tryAlternative := func(ctx context.Context, state State) (State, error) {
+			state.Name = "alternative"
+			state.Path = append(state.Path, "alternative")
+			return state, nil
+		}
+
+		wf := New().
+			Step("try_primary", TypedStep(tryPrimary),
+				AllowErrors[State](ErrTransitionRejected)).
+			Step("try_alternative", TypedStep(tryAlternative))
+
+		input := State{Name: "initial", Path: []string{"start"}}
+		result, err := ExecuteTyped[State](context.Background(), wf, input)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		if result.Name != "alternative" {
+			t.Errorf("expected name 'alternative', got %q", result.Name)
+		}
+
+		expectedPath := []string{"start", "alternative"}
+		if len(result.Path) != len(expectedPath) {
+			t.Fatalf("expected path length %d, got %d", len(expectedPath), len(result.Path))
+		}
+
+		for i, step := range expectedPath {
+			if result.Path[i] != step {
+				t.Errorf("path[%d]: expected %q, got %q", i, step, result.Path[i])
+			}
+		}
+	})
+}
+
+func TestAllowErrorWithFallback_FSMUseCase(t *testing.T) {
 	t.Run("FSM transition with fallback pattern", func(t *testing.T) {
 		type State struct {
 			Name string
@@ -517,7 +732,7 @@ func TestAllowError_FSMUseCase(t *testing.T) {
 		wf := New().
 			WithID(WorkflowID("fsm-workflow")).
 			Step("try_primary", TypedStep(tryPrimaryTransition),
-				AllowError(
+				AllowErrorWithFallback(
 					func(err error) bool { return errors.Is(err, ErrTransitionRejected) },
 					func(ctx context.Context, state State, err error) State {
 						// Log that primary failed, return input state

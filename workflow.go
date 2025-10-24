@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -379,23 +380,28 @@ type allowErrorConfig struct {
 	fallback  any // func(context.Context, In, error) Out
 }
 
-// AllowError returns a StepOption that allows the workflow to continue when specific errors occur.
-// If the condition function returns true for an error, the fallback function is called to provide
-// a value to pass to the next step. This check happens BEFORE any retry logic.
+// AllowErrorWithFallback returns a StepOption that allows the workflow to continue when specific
+// errors occur, using a custom fallback function to provide the value for the next step.
+// If the condition function returns true for an error, the fallback function is called.
+// This check happens BEFORE any retry logic.
+//
+// Use this when you need custom fallback logic, logging, or transformations.
+// For simple passthrough of the input value, see AllowErrors.
 //
 // Example (FSM transition with fallback):
 //
 //	wf.Step("try_primary_transition", workflow.TypedStep(tryTransition),
-//		workflow.AllowError(
+//		workflow.AllowErrorWithFallback(
 //			func(err error) bool { return errors.Is(err, ErrTransitionRejected) },
 //			func(ctx context.Context, input State, err error) State {
-//				// Log error, return input state to try alternative transition
+//				// Log error, return modified state
 //				log.Printf("Primary transition rejected: %v", err)
+//				input.Retries++
 //				return input
 //			},
 //		)).
 //	Step("try_alternative_transition", workflow.TypedStep(tryAlternativeTransition))
-func AllowError[In, Out any](
+func AllowErrorWithFallback[In, Out any](
 	condition func(error) bool,
 	fallback func(context.Context, In, error) Out,
 ) StepOption {
@@ -405,6 +411,44 @@ func AllowError[In, Out any](
 			fallback:  fallback,
 		}
 	}
+}
+
+// AllowErrors returns a StepOption that allows the workflow to continue when any of the specified
+// errors occur, passing through the input value unchanged. This is a simplified version of
+// AllowErrorWithFallback for the common case where you just want to continue with the original input.
+// This check happens BEFORE any retry logic.
+//
+// Use this when:
+//   - The step's input and output types are the same
+//   - You want to passthrough the original input unchanged
+//   - You just need to match specific sentinel errors
+//
+// For custom fallback logic or logging, use AllowErrorWithFallback instead.
+//
+// Example (simple FSM transition):
+//
+//	wf.Step("try_primary_transition", workflow.TypedStep(tryTransition),
+//		workflow.AllowErrors[State](ErrTransitionRejected)).
+//	Step("try_alternative_transition", workflow.TypedStep(tryAlternativeTransition))
+//
+// Example (multiple errors):
+//
+//	wf.Step("optional_step", workflow.TypedStep(tryOptional),
+//		workflow.AllowErrors[State](ErrNotFound, ErrTimeout, ErrUnavailable))
+func AllowErrors[T any](targetErrs ...error) StepOption {
+	return AllowErrorWithFallback(
+		func(err error) bool {
+			for _, target := range targetErrs {
+				if errors.Is(err, target) {
+					return true
+				}
+			}
+			return false
+		},
+		func(ctx context.Context, input T, err error) T {
+			return input
+		},
+	)
 }
 
 // TypeMismatchError is returned when there's a type mismatch between workflow steps.

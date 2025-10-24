@@ -165,39 +165,60 @@ wf := workflow.New().
         workflow.NoRetry())  // Explicitly disable retry
 ```
 
-### Error Handling with AllowError
+### Error Handling
 
-Allow specific errors to continue workflow execution with custom fallback values. This is useful for non-critical operations or FSM transitions where alternative paths exist:
+Allow specific errors to continue workflow execution instead of failing the entire workflow. Choose between simple passthrough or custom fallback logic:
+
+#### Simple Version - AllowErrors
+
+For the common case where you just want to passthrough the input value unchanged:
 
 ```go
 var ErrTransitionRejected = errors.New("transition rejected")
 
+// Simple: passthrough input on error
+wf := workflow.New().
+    Step("try_primary", workflow.TypedStep(tryPrimaryTransition),
+        workflow.AllowErrors[State](ErrTransitionRejected)).
+    Step("try_alternative", workflow.TypedStep(tryAlternativeTransition))
+
+// Multiple errors
+wf.Step("optional_cache", workflow.TypedStep(getFromCache),
+    workflow.AllowErrors[Data](ErrCacheUnavailable, ErrTimeout, ErrNotFound))
+```
+
+#### Advanced Version - AllowErrorWithFallback
+
+For custom fallback logic, logging, or transformations:
+
+```go
 type State struct {
-    Name string
-    Path []string
+    Name    string
+    Path    []string
+    Retries int
 }
 
 wf := workflow.New().
-    // Try primary transition, continue with input if rejected
     Step("try_primary", workflow.TypedStep(tryPrimaryTransition),
-        workflow.AllowError(
+        workflow.AllowErrorWithFallback(
             func(err error) bool { return errors.Is(err, ErrTransitionRejected) },
             func(ctx context.Context, state State, err error) State {
-                // Log rejection, return input state for alternative path
+                // Custom logic: log and increment retries
                 log.Printf("Primary transition rejected: %v", err)
                 state.Path = append(state.Path, "primary_rejected")
+                state.Retries++
                 return state
             },
         )).
-    // Try alternative transition
     Step("try_alternative", workflow.TypedStep(tryAlternativeTransition))
 ```
 
 **Key Points:**
-- AllowError check happens **before** any retry logic
-- If condition returns true, the fallback function provides the value to pass to the next step
+- Error check happens **before** any retry logic
+- `AllowErrors`: Simple passthrough for matching errors (requires type parameter)
+- `AllowErrorWithFallback`: Full control with custom fallback function
 - If condition returns false, normal error handling (retry/fail) applies
-- Fallback function has access to context, input, and error for flexible recovery
+- Fallback function has access to context, input, and error
 - Observer notifications include `OnStepErrorAllowed` for bypassed errors
 
 ### Parallel Execution
@@ -320,11 +341,19 @@ func finalizeState(ctx context.Context, state State) (State, error) {
     return state, nil
 }
 
-// Build workflow with AllowError for graceful fallback
+// Option 1: Simple passthrough (most common)
 wf := workflow.New().
-    WithID(workflow.WorkflowID("fsm-workflow")).
+    WithID(workflow.WorkflowID("fsm-workflow-simple")).
     Step("try_primary", workflow.TypedStep(tryPrimaryTransition),
-        workflow.AllowError(
+        workflow.AllowErrors[State](ErrTransitionRejected)).
+    Step("try_alternative", workflow.TypedStep(tryAlternativeTransition)).
+    Step("finalize", workflow.TypedStep(finalizeState))
+
+// Option 2: Custom fallback with logging
+wf := workflow.New().
+    WithID(workflow.WorkflowID("fsm-workflow-advanced")).
+    Step("try_primary", workflow.TypedStep(tryPrimaryTransition),
+        workflow.AllowErrorWithFallback(
             func(err error) bool { return errors.Is(err, ErrTransitionRejected) },
             func(ctx context.Context, state State, err error) State {
                 // Primary rejected, mark in path and continue
@@ -342,7 +371,8 @@ result, err := workflow.ExecuteTyped[State](ctx, wf, State{
     Status: "pending",
     Path:   []string{"start"},
 })
-// Result path: ["start", "primary_rejected", "alternative", "finalized"]
+// Result path with simple version: ["start", "alternative", "finalized"]
+// Result path with custom fallback: ["start", "primary_rejected", "alternative", "finalized"]
 ```
 
 ### Reusable Retry Policies
@@ -431,10 +461,13 @@ wf := workflow.New().
     ))
 ```
 
-### AllowError with Retry and Observability
+### Error Handling with Retry and Observability
 
 ```go
-var ErrCacheUnavailable = errors.New("cache unavailable")
+var (
+    ErrCacheUnavailable = errors.New("cache unavailable")
+    ErrCacheMiss        = errors.New("cache miss")
+)
 
 type metricsObserver struct {
     metrics MetricsClient
@@ -455,23 +488,30 @@ wf := workflow.New().
         MaxDelay:     1 * time.Second,
         Multiplier:   2.0,
     }).
-    // Try to get data from cache, allow cache miss
+    // Try to get data from cache, allow cache errors
     Step("get_cache", workflow.TypedStep(getFromCache),
-        workflow.AllowError(
-            func(err error) bool { return errors.Is(err, ErrCacheUnavailable) },
-            func(ctx context.Context, key string, err error) Data {
-                // Cache miss is acceptable, return empty data
-                return Data{CacheHit: false}
-            },
-        )).
-    // Fetch from DB if cache missed (retries on network errors)
+        workflow.AllowErrors[CacheKey](ErrCacheUnavailable, ErrCacheMiss)).
+    // Fetch from DB if cache failed (retries on network errors)
     Step("get_db", workflow.TypedStep(getFromDB))
 
-// If cache fails with ErrCacheUnavailable:
+// Alternative with custom fallback:
+wf2 := workflow.New().
+    Step("get_cache", workflow.TypedStep(getFromCache),
+        workflow.AllowErrorWithFallback(
+            func(err error) bool { 
+                return errors.Is(err, ErrCacheUnavailable) || errors.Is(err, ErrCacheMiss) 
+            },
+            func(ctx context.Context, key CacheKey, err error) CacheKey {
+                log.Printf("Cache error: %v, falling back to DB", err)
+                return key // Passthrough with logging
+            },
+        )).
+    Step("get_db", workflow.TypedStep(getFromDB))
+
+// If cache fails with allowed error:
 // - No retry (error is allowed)
-// - Fallback returns empty Data
 // - Workflow continues to DB step
-// - DB step will retry on network errors
+// - DB step will retry on network errors (per retry config)
 ```
 
 ## Testing

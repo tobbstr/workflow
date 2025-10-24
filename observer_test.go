@@ -16,6 +16,7 @@ type mockObserver struct {
 	stepStarts        []StepName
 	stepCompletes     []stepCompleteEvent
 	stepRetries       []stepRetryEvent
+	stepErrorsAllowed []stepErrorAllowedEvent
 	shouldPanic       bool
 	panicOnMethod     string
 }
@@ -35,6 +36,11 @@ type stepCompleteEvent struct {
 type stepRetryEvent struct {
 	stepName StepName
 	attempt  int
+	err      error
+}
+
+type stepErrorAllowedEvent struct {
+	stepName StepName
 	err      error
 }
 
@@ -91,6 +97,18 @@ func (m *mockObserver) OnStepRetry(ctx context.Context, stepName StepName, attem
 	m.stepRetries = append(m.stepRetries, stepRetryEvent{
 		stepName: stepName,
 		attempt:  attempt,
+		err:      err,
+	})
+}
+
+func (m *mockObserver) OnStepErrorAllowed(ctx context.Context, stepName StepName, err error) {
+	if m.shouldPanic && m.panicOnMethod == "OnStepErrorAllowed" {
+		panic("observer panic")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stepErrorsAllowed = append(m.stepErrorsAllowed, stepErrorAllowedEvent{
+		stepName: stepName,
 		err:      err,
 	})
 }

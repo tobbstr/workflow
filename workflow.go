@@ -29,11 +29,12 @@ type Workflow struct {
 	observers    []Observer
 }
 
-// workflowStep wraps a Step with its configured name and retry policy.
+// workflowStep wraps a Step with its configured name, retry policy, and error handling.
 type workflowStep struct {
-	step  Step
-	name  StepName
-	retry *RetryConfig
+	step       Step
+	name       StepName
+	retry      *RetryConfig
+	allowError *allowErrorConfig
 }
 
 // New creates a new empty workflow.
@@ -125,9 +126,10 @@ func (w *Workflow) Step(name StepName, step Step, opts ...StepOption) *Workflow 
 	}
 
 	w.steps = append(w.steps, &workflowStep{
-		step:  step,
-		name:  actualName,
-		retry: stepRetry,
+		step:       step,
+		name:       actualName,
+		retry:      stepRetry,
+		allowError: config.allowError,
 	})
 
 	return w
@@ -213,7 +215,8 @@ func (w *Workflow) Execute(ctx context.Context, input any) (any, error) {
 	return currentOutput, nil
 }
 
-// executeStepWithRetry executes a step with retry logic and observer notifications.
+// executeStepWithRetry executes a step with error allowance and retry logic.
+// AllowError check happens BEFORE retry logic.
 func (w *Workflow) executeStepWithRetry(
 	ctx context.Context,
 	ws *workflowStep,
@@ -221,15 +224,52 @@ func (w *Workflow) executeStepWithRetry(
 	output *any,
 	stepErr *error,
 ) error {
+	// Execute the step first
+	*output, *stepErr = ws.step.Execute(ctx, input)
+
+	// Return early if no error
+	if *stepErr == nil {
+		return nil
+	}
+
+	// Check AllowError condition BEFORE retry logic
+	if ws.allowError != nil {
+		allowed := w.checkAllowedError(ctx, ws, input, *stepErr, output)
+		if allowed {
+			// Error was allowed and fallback was applied
+			w.notifyStepErrorAllowed(ctx, ws.name, *stepErr)
+			return nil
+		}
+	}
+
+	// Error not allowed, proceed with retry logic if configured
 	if ws.retry == nil {
-		*output, *stepErr = ws.step.Execute(ctx, input)
 		return *stepErr
 	}
 
-	// Execute with retry and notify on each retry attempt
-	var lastErr error
-	for attempt := 1; attempt <= ws.retry.MaxAttempts; attempt++ {
-		// Check context cancellation
+	// Execute retry attempts (starting from attempt 2, since we already executed once)
+	var lastErr error = *stepErr
+	for attempt := 2; attempt <= ws.retry.MaxAttempts; attempt++ {
+		// Check if error is retryable
+		if !ws.retry.shouldRetry(lastErr) {
+			return lastErr
+		}
+
+		// Notify retry
+		w.notifyStepRetry(ctx, ws.name, attempt-1, lastErr)
+
+		// Calculate delay with exponential backoff and jitter
+		delay := calculateDelay(ws.retry, attempt-1)
+
+		// Sleep with context awareness
+		select {
+		case <-time.After(delay):
+			// Continue to next attempt
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled during retry: %w", ctx.Err())
+		}
+
+		// Check context cancellation before retry
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("context cancelled: %w", err)
 		}
@@ -240,33 +280,52 @@ func (w *Workflow) executeStepWithRetry(
 		if lastErr == nil {
 			return nil
 		}
-
-		// Check if error is retryable
-		if !ws.retry.shouldRetry(lastErr) {
-			return lastErr
-		}
-
-		// Don't sleep or notify after the last attempt
-		if attempt == ws.retry.MaxAttempts {
-			break
-		}
-
-		// Notify retry
-		w.notifyStepRetry(ctx, ws.name, attempt, lastErr)
-
-		// Calculate delay with exponential backoff and jitter
-		delay := calculateDelay(ws.retry, attempt)
-
-		// Sleep with context awareness
-		select {
-		case <-time.After(delay):
-			// Continue to next attempt
-		case <-ctx.Done():
-			return fmt.Errorf("context cancelled during retry: %w", ctx.Err())
-		}
 	}
 
 	return fmt.Errorf("max retry attempts (%d) exceeded: %w", ws.retry.MaxAttempts, lastErr)
+}
+
+// checkAllowedError checks if an error is allowed and applies the fallback if so.
+// Returns true if the error was allowed and fallback was applied successfully.
+func (w *Workflow) checkAllowedError(
+	ctx context.Context,
+	ws *workflowStep,
+	input any,
+	err error,
+	output *any,
+) bool {
+	// Type-assert the condition function
+	condition, ok := ws.allowError.condition.(func(error) bool)
+	if !ok {
+		// Invalid configuration, treat as not allowed
+		return false
+	}
+
+	// Check if the condition matches
+	if !condition(err) {
+		return false
+	}
+
+	// Error is allowed, apply fallback
+	// We need to call the fallback function with proper types
+	// The fallback is stored as any, so we need reflection to call it
+	fallbackValue := reflect.ValueOf(ws.allowError.fallback)
+	if !fallbackValue.IsValid() || fallbackValue.Kind() != reflect.Func {
+		return false
+	}
+
+	// Call fallback(ctx, input, err)
+	inputValue := reflect.ValueOf(input)
+	errValue := reflect.ValueOf(err)
+	ctxValue := reflect.ValueOf(ctx)
+
+	results := fallbackValue.Call([]reflect.Value{ctxValue, inputValue, errValue})
+	if len(results) != 1 {
+		return false
+	}
+
+	*output = results[0].Interface()
+	return true
 }
 
 // ExecuteTyped is a type-safe helper that executes the workflow and returns a typed result.
@@ -306,12 +365,47 @@ func ExecuteTyped[Out any](ctx context.Context, w *Workflow, input any) (Out, er
 
 // stepConfig holds configuration options for a step.
 type stepConfig struct {
-	retry   *RetryConfig
-	noRetry bool
+	retry      *RetryConfig
+	noRetry    bool
+	allowError *allowErrorConfig
 }
 
 // StepOption is a functional option for configuring step behavior.
 type StepOption func(*stepConfig)
+
+// allowErrorConfig holds the configuration for allowing specific errors to be bypassed.
+type allowErrorConfig struct {
+	condition any // func(error) bool
+	fallback  any // func(context.Context, In, error) Out
+}
+
+// AllowError returns a StepOption that allows the workflow to continue when specific errors occur.
+// If the condition function returns true for an error, the fallback function is called to provide
+// a value to pass to the next step. This check happens BEFORE any retry logic.
+//
+// Example (FSM transition with fallback):
+//
+//	wf.Step("try_primary_transition", workflow.TypedStep(tryTransition),
+//		workflow.AllowError(
+//			func(err error) bool { return errors.Is(err, ErrTransitionRejected) },
+//			func(ctx context.Context, input State, err error) State {
+//				// Log error, return input state to try alternative transition
+//				log.Printf("Primary transition rejected: %v", err)
+//				return input
+//			},
+//		)).
+//	Step("try_alternative_transition", workflow.TypedStep(tryAlternativeTransition))
+func AllowError[In, Out any](
+	condition func(error) bool,
+	fallback func(context.Context, In, error) Out,
+) StepOption {
+	return func(sc *stepConfig) {
+		sc.allowError = &allowErrorConfig{
+			condition: condition,
+			fallback:  fallback,
+		}
+	}
+}
 
 // TypeMismatchError is returned when there's a type mismatch between workflow steps.
 type TypeMismatchError struct {

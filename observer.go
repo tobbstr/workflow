@@ -42,6 +42,9 @@ type Observer interface {
 
 	// OnStepRetry is called when a step is retried after a failure.
 	OnStepRetry(ctx context.Context, stepName StepName, attempt int, err error)
+
+	// OnStepErrorAllowed is called when a step error is allowed and bypassed using AllowError.
+	OnStepErrorAllowed(ctx context.Context, stepName StepName, err error)
 }
 
 // NoopObserver is a default implementation of Observer that does nothing.
@@ -75,6 +78,9 @@ func (n *NoopObserver) OnStepComplete(ctx context.Context, stepName StepName, du
 
 // OnStepRetry implements Observer.
 func (n *NoopObserver) OnStepRetry(ctx context.Context, stepName StepName, attempt int, err error) {}
+
+// OnStepErrorAllowed implements Observer.
+func (n *NoopObserver) OnStepErrorAllowed(ctx context.Context, stepName StepName, err error) {}
 
 // WithObserver adds an observer to the workflow.
 // Multiple observers can be added and all will be notified of events.
@@ -157,6 +163,20 @@ func (w *Workflow) notifyStepRetry(ctx context.Context, stepName StepName, attem
 				}
 			}()
 			obs.OnStepRetry(ctx, stepName, attempt, err)
+		}()
+	}
+}
+
+// notifyStepErrorAllowed notifies all observers that a step error was allowed and bypassed.
+func (w *Workflow) notifyStepErrorAllowed(ctx context.Context, stepName StepName, err error) {
+	for _, obs := range w.observers {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// Observer panic is logged but doesn't break execution
+				}
+			}()
+			obs.OnStepErrorAllowed(ctx, stepName, err)
 		}()
 	}
 }

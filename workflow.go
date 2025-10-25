@@ -295,21 +295,26 @@ func (w *Workflow) checkAllowedError(
 	err error,
 	output *any,
 ) bool {
-	// Type-assert the condition function
-	condition, ok := ws.allowError.condition.(func(error) bool)
+	// Type-assert the checkError function
+	checkError, ok := ws.allowError.checkError.(func(error) bool)
 	if !ok {
 		// Invalid configuration, treat as not allowed
 		return false
 	}
 
-	// Check if the condition matches
-	if !condition(err) {
+	// Check if the error should be allowed
+	if !checkError(err) {
 		return false
 	}
 
-	// Error is allowed, apply fallback
-	// We need to call the fallback function with proper types
-	// The fallback is stored as any, so we need reflection to call it
+	// Error is allowed, handle based on configuration
+	if ws.allowError.passthrough {
+		// Simple passthrough - no reflection needed
+		*output = input
+		return true
+	}
+
+	// Complex fallback - use reflection
 	fallbackValue := reflect.ValueOf(ws.allowError.fallback)
 	if !fallbackValue.IsValid() || fallbackValue.Kind() != reflect.Func {
 		return false
@@ -376,13 +381,15 @@ type StepOption func(*stepConfig)
 
 // allowErrorConfig holds the configuration for allowing specific errors to be bypassed.
 type allowErrorConfig struct {
-	condition any // func(error) bool
-	fallback  any // func(context.Context, In, error) Out
+	checkError any // func(error) bool
+	fallback   any // func(context.Context, In, error) Out
+	// Simple passthrough mode - when true, just pass through the input without calling fallback
+	passthrough bool
 }
 
 // AllowErrorWithFallback returns a StepOption that allows the workflow to continue when specific
 // errors occur, using a custom fallback function to provide the value for the next step.
-// If the condition function returns true for an error, the fallback function is called.
+// If the checkError function returns true for an error, the fallback function is called.
 // This check happens BEFORE any retry logic.
 //
 // Use this when you need custom fallback logic, logging, or transformations.
@@ -402,13 +409,13 @@ type allowErrorConfig struct {
 //		)).
 //	Step("try_alternative_transition", workflow.TypedStep(tryAlternativeTransition))
 func AllowErrorWithFallback[In, Out any](
-	condition func(error) bool,
+	checkError func(error) bool,
 	fallback func(context.Context, In, error) Out,
 ) StepOption {
 	return func(sc *stepConfig) {
 		sc.allowError = &allowErrorConfig{
-			condition: condition,
-			fallback:  fallback,
+			checkError: checkError,
+			fallback:   fallback,
 		}
 	}
 }
@@ -436,19 +443,19 @@ func AllowErrorWithFallback[In, Out any](
 //	wf.Step("optional_step", workflow.TypedStep(tryOptional),
 //		workflow.AllowErrors[State](ErrNotFound, ErrTimeout, ErrUnavailable))
 func AllowErrors[T any](targetErrs ...error) StepOption {
-	return AllowErrorWithFallback(
-		func(err error) bool {
-			for _, target := range targetErrs {
-				if errors.Is(err, target) {
-					return true
+	return func(sc *stepConfig) {
+		sc.allowError = &allowErrorConfig{
+			checkError: func(err error) bool {
+				for _, target := range targetErrs {
+					if errors.Is(err, target) {
+						return true
+					}
 				}
-			}
-			return false
-		},
-		func(ctx context.Context, input T, err error) T {
-			return input
-		},
-	)
+				return false
+			},
+			passthrough: true, // Use optimized passthrough mode
+		}
+	}
 }
 
 // TypeMismatchError is returned when there's a type mismatch between workflow steps.

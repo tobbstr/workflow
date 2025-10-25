@@ -674,6 +674,71 @@ func BenchmarkSimpleWorkflow(b *testing.B) {
 	}
 }
 
+// BenchmarkAllowErrors benchmarks the optimized AllowErrors implementation.
+func BenchmarkAllowErrors(b *testing.B) {
+	// Define test errors
+	ErrTestError := errors.New("test error")
+	ErrAnotherError := errors.New("another error")
+
+	// Test data types
+	type Input struct {
+		ID   int
+		Data string
+	}
+
+	// Step that always fails with ErrTestError
+	failingStep := func(ctx context.Context, input Input) (Input, error) {
+		return Input{}, ErrTestError
+	}
+
+	// Step that processes successfully
+	successStep := func(ctx context.Context, input Input) (string, error) {
+		return fmt.Sprintf("processed: %s", input.Data), nil
+	}
+
+	// Create workflow with optimized AllowErrors
+	wf := New().
+		WithID(WorkflowID("allow-errors-optimized")).
+		Step("process", TypedStep(failingStep),
+			AllowErrors[Input](ErrTestError)).
+		Step("format", TypedStep(successStep))
+
+	ctx := context.Background()
+	input := Input{ID: 1, Data: "test data"}
+
+	b.Run("OptimizedAllowErrors", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			_, err := ExecuteTyped[string](ctx, wf, input)
+			if err != nil {
+				b.Fatalf("workflow execution failed: %v", err)
+			}
+		}
+	})
+
+	// Compare with non-matching error (should fail)
+	wfNonMatching := New().
+		WithID(WorkflowID("non-matching-optimized")).
+		Step("process", TypedStep(func(ctx context.Context, input Input) (Input, error) {
+			return Input{}, ErrAnotherError
+		}),
+			AllowErrors[Input](ErrTestError))
+
+	b.Run("NonMatchingError", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			_, err := ExecuteTyped[Input](ctx, wfNonMatching, input)
+			if err == nil {
+				b.Fatal("expected error, got nil")
+			}
+		}
+	})
+}
+
 // BenchmarkAllowErrorWithFallback benchmarks workflow execution with AllowErrorWithFallback step option.
 func BenchmarkAllowErrorWithFallback(b *testing.B) {
 	// Define test errors

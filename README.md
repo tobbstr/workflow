@@ -144,6 +144,8 @@ authStep := workflow.NamedTypedStep("authenticate", func(ctx context.Context, to
 Configure retry behavior at the workflow or step level:
 
 ```go
+import "google.golang.org/grpc/codes"
+
 // Standard gRPC retry policy
 grpcRetry := workflow.RetryConfig{
     MaxAttempts:  5,
@@ -288,7 +290,7 @@ type metricsObserver struct {
     metrics MetricsClient
 }
 
-func (m *metricsObserver) OnStepComplete(ctx context.Context, stepName workflow.StepName, duration time.Duration, err error) {
+func (m *metricsObserver) OnStepComplete(ctx context.Context, stepName StepName, duration time.Duration, err error) {
     tags := map[string]string{"step": string(stepName)}
     if err != nil {
         tags["status"] = "error"
@@ -378,6 +380,8 @@ result, err := workflow.ExecuteTyped[State](ctx, wf, State{
 ### Reusable Retry Policies
 
 ```go
+import "google.golang.org/grpc/codes"
+
 var (
     // Standard gRPC retry
     StandardGRPCRetry = workflow.RetryConfig{
@@ -487,6 +491,7 @@ wf := workflow.New().
         InitialDelay: 100 * time.Millisecond,
         MaxDelay:     1 * time.Second,
         Multiplier:   2.0,
+        Condition:    workflow.RetryOnNetworkErrors(), // Only retry on network errors
     }).
     // Try to get data from cache, allow cache errors
     Step("get_cache", workflow.TypedStep(getFromCache),
@@ -511,7 +516,7 @@ wf2 := workflow.New().
 // If cache fails with allowed error:
 // - No retry (error is allowed)
 // - Workflow continues to DB step
-// - DB step will retry on network errors (per retry config)
+// - DB step will retry on network errors only (per retry config)
 ```
 
 ## Testing

@@ -674,6 +674,112 @@ func BenchmarkSimpleWorkflow(b *testing.B) {
 	}
 }
 
+// BenchmarkAllowErrorWithFallback benchmarks workflow execution with AllowErrorWithFallback step option.
+func BenchmarkAllowErrorWithFallback(b *testing.B) {
+	// Define test errors
+	ErrTestError := errors.New("test error")
+	ErrAnotherError := errors.New("another error")
+
+	// Test data types
+	type Input struct {
+		ID   int
+		Data string
+	}
+
+	type ProcessedData struct {
+		Input
+		Processed bool
+		Fallback  bool
+	}
+
+	// Step that always fails with ErrTestError
+	failingStep := func(ctx context.Context, input Input) (ProcessedData, error) {
+		return ProcessedData{}, ErrTestError
+	}
+
+	// Step that processes successfully
+	successStep := func(ctx context.Context, input ProcessedData) (string, error) {
+		return fmt.Sprintf("processed: %s", input.Data), nil
+	}
+
+	// Create workflow with AllowErrorWithFallback
+	wf := New().
+		WithID(WorkflowID("allow-error-fallback")).
+		Step("process", TypedStep(failingStep),
+			AllowErrorWithFallback(
+				func(err error) bool { return errors.Is(err, ErrTestError) },
+				func(ctx context.Context, input Input, err error) ProcessedData {
+					return ProcessedData{
+						Input:     input,
+						Processed: true,
+						Fallback:  true,
+					}
+				},
+			)).
+		Step("format", TypedStep(successStep))
+
+	ctx := context.Background()
+	input := Input{ID: 1, Data: "test data"}
+
+	b.Run("WithFallback", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			_, err := ExecuteTyped[string](ctx, wf, input)
+			if err != nil {
+				b.Fatalf("workflow execution failed: %v", err)
+			}
+		}
+	})
+
+	// Benchmark without fallback (should fail)
+	wfNoFallback := New().
+		WithID(WorkflowID("no-fallback")).
+		Step("process", TypedStep(failingStep))
+
+	b.Run("WithoutFallback", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			_, err := ExecuteTyped[ProcessedData](ctx, wfNoFallback, input)
+			if err == nil {
+				b.Fatal("expected error, got nil")
+			}
+		}
+	})
+
+	// Benchmark with non-matching error (should fail)
+	wfNonMatching := New().
+		WithID(WorkflowID("non-matching")).
+		Step("process", TypedStep(func(ctx context.Context, input Input) (ProcessedData, error) {
+			return ProcessedData{}, ErrAnotherError
+		}),
+			AllowErrorWithFallback(
+				func(err error) bool { return errors.Is(err, ErrTestError) },
+				func(ctx context.Context, input Input, err error) ProcessedData {
+					return ProcessedData{
+						Input:     input,
+						Processed: true,
+						Fallback:  true,
+					}
+				},
+			))
+
+	b.Run("NonMatchingError", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			_, err := ExecuteTyped[ProcessedData](ctx, wfNonMatching, input)
+			if err == nil {
+				b.Fatal("expected error, got nil")
+			}
+		}
+	})
+}
+
 // Helper functions for type comparisons
 func stringType() reflect.Type { return reflect.TypeOf("") }
 func boolType() reflect.Type   { return reflect.TypeOf(false) }

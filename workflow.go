@@ -432,17 +432,16 @@ func AllowErrorWithFallback[In, Out any](
 //
 // For custom fallback logic or logging, use AllowErrorWithFallback instead.
 //
-// Example (simple FSM transition):
+// Example (single error):
 //
-//	wf.Step("try_primary_transition", workflow.TypedStep(tryTransition),
-//		workflow.AllowErrors[State](ErrTransitionRejected)).
-//	Step("try_alternative_transition", workflow.TypedStep(tryAlternativeTransition))
+//	wf.Step("optional_step", workflow.TypedStep(tryOptional),
+//		workflow.AllowErrors(ErrTransitionRejected)).
 //
 // Example (multiple errors):
 //
 //	wf.Step("optional_step", workflow.TypedStep(tryOptional),
-//		workflow.AllowErrors[State](ErrNotFound, ErrTimeout, ErrUnavailable))
-func AllowErrors[T any](targetErrs ...error) StepOption {
+//		workflow.AllowErrors(ErrNotFound, ErrTimeout, ErrUnavailable))
+func AllowErrors(targetErrs ...error) StepOption {
 	return func(sc *stepConfig) {
 		sc.allowError = &allowErrorConfig{
 			checkError: func(err error) bool {

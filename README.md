@@ -181,12 +181,12 @@ var ErrTransitionRejected = errors.New("transition rejected")
 // Simple: passthrough input on error
 wf := workflow.New().
     Step("try_primary", workflow.TypedStep(tryPrimaryTransition),
-        workflow.AllowErrors[State](ErrTransitionRejected)).
+        workflow.AllowErrors(ErrTransitionRejected)).
     Step("try_alternative", workflow.TypedStep(tryAlternativeTransition))
 
 // Multiple errors
 wf.Step("optional_cache", workflow.TypedStep(getFromCache),
-    workflow.AllowErrors[Data](ErrCacheUnavailable, ErrTimeout, ErrNotFound))
+    workflow.AllowErrors(ErrCacheUnavailable, ErrTimeout, ErrNotFound))
 ```
 
 #### Advanced Version - AllowErrorWithFallback
@@ -217,7 +217,7 @@ wf := workflow.New().
 
 **Key Points:**
 - Error check happens **before** any retry logic
-- `AllowErrors`: Simple passthrough for matching errors (requires type parameter)
+- `AllowErrors`: Simple passthrough for matching errors
 - `AllowErrorWithFallback`: Full control with custom fallback function
 - If condition returns false, normal error handling (retry/fail) applies
 - Fallback function has access to context, input, and error
@@ -347,7 +347,7 @@ func finalizeState(ctx context.Context, state State) (State, error) {
 wf := workflow.New().
     WithID(workflow.WorkflowID("fsm-workflow-simple")).
     Step("try_primary", workflow.TypedStep(tryPrimaryTransition),
-        workflow.AllowErrors[State](ErrTransitionRejected)).
+        workflow.AllowErrors(ErrTransitionRejected)).
     Step("try_alternative", workflow.TypedStep(tryAlternativeTransition)).
     Step("finalize", workflow.TypedStep(finalizeState))
 
@@ -495,7 +495,7 @@ wf := workflow.New().
     }).
     // Try to get data from cache, allow cache errors
     Step("get_cache", workflow.TypedStep(getFromCache),
-        workflow.AllowErrors[CacheKey](ErrCacheUnavailable, ErrCacheMiss)).
+        workflow.AllowErrors(ErrCacheUnavailable, ErrCacheMiss)).
     // Fetch from DB if cache failed (retries on network errors)
     Step("get_db", workflow.TypedStep(getFromDB))
 

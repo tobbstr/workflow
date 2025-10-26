@@ -700,7 +700,7 @@ func BenchmarkAllowErrors(b *testing.B) {
 	wf := New().
 		WithID(WorkflowID("allow-errors-optimized")).
 		Step("process", TypedStep(failingStep),
-			AllowErrors[Input](ErrTestError)).
+			AllowErrors(ErrTestError)).
 		Step("format", TypedStep(successStep))
 
 	ctx := context.Background()
@@ -724,7 +724,7 @@ func BenchmarkAllowErrors(b *testing.B) {
 		Step("process", TypedStep(func(ctx context.Context, input Input) (Input, error) {
 			return Input{}, ErrAnotherError
 		}),
-			AllowErrors[Input](ErrTestError))
+			AllowErrors(ErrTestError))
 
 	b.Run("NonMatchingError", func(b *testing.B) {
 		b.ReportAllocs()

@@ -504,7 +504,7 @@ func TestAllowErrors(t *testing.T) {
 
 		wf := New().
 			Step("step1", TypedStep(step1),
-				AllowErrors[string](ErrTransitionRejected)).
+				AllowErrors(ErrTransitionRejected)).
 			Step("step2", TypedStep(step2))
 
 		result, err := ExecuteTyped[string](context.Background(), wf, "test")
@@ -537,7 +537,7 @@ func TestAllowErrors(t *testing.T) {
 
 				wf := New().
 					Step("step1", TypedStep(step1),
-						AllowErrors[string](ErrTransitionRejected, ErrNotFound, ErrPermissionDenied))
+						AllowErrors(ErrTransitionRejected, ErrNotFound, ErrPermissionDenied))
 
 				_, err := ExecuteTyped[string](context.Background(), wf, "test")
 				if tc.wantErr && err == nil {
@@ -567,7 +567,7 @@ func TestAllowErrors(t *testing.T) {
 
 		wf := New().
 			Step("step1", TypedStep(step1),
-				AllowErrors[User](ErrNotFound)).
+				AllowErrors(ErrNotFound)).
 			Step("step2", TypedStep(step2))
 
 		input := User{ID: 123, Name: "original"}
@@ -601,7 +601,7 @@ func TestAllowErrors(t *testing.T) {
 				Multiplier:   2.0,
 			}).
 			Step("step1", TypedStep(step1),
-				AllowErrors[string](ErrTransitionRejected))
+				AllowErrors(ErrTransitionRejected))
 
 		result, err := ExecuteTyped[string](context.Background(), wf, "test")
 		if err != nil {
@@ -628,7 +628,7 @@ func TestAllowErrors(t *testing.T) {
 		wf := New().
 			WithObserver(obs).
 			Step("step1", TypedStep(step1),
-				AllowErrors[string](ErrNotFound))
+				AllowErrors(ErrNotFound))
 
 		_, err := ExecuteTyped[string](context.Background(), wf, "test")
 		if err != nil {
@@ -651,7 +651,7 @@ func TestAllowErrors(t *testing.T) {
 
 		wf := New().
 			Step("step1", TypedStep(step1),
-				AllowErrors[string]()) // No errors specified
+				AllowErrors()) // No errors specified
 
 		_, err := ExecuteTyped[string](context.Background(), wf, "test")
 		if err == nil {
@@ -681,7 +681,7 @@ func TestAllowErrors(t *testing.T) {
 
 		wf := New().
 			Step("try_primary", TypedStep(tryPrimary),
-				AllowErrors[State](ErrTransitionRejected)).
+				AllowErrors(ErrTransitionRejected)).
 			Step("try_alternative", TypedStep(tryAlternative))
 
 		input := State{Name: "initial", Path: []string{"start"}}

@@ -592,7 +592,7 @@ The following are explicitly out of scope:
 - Saga pattern (no distributed transactions or compensation)
 - Async/long-running workflows (only synchronous, short-lived workflows)
 - Workflow versioning or migration
-- Built-in circuit breakers or rate limiting
+- Built-in circuit breakers or rate limiting (these are service-level concerns that belong in middleware/handlers, not per-request workflows)
 
 ## API Documentation
 

@@ -65,6 +65,8 @@ go get github.com/tobbstr/workflow
 
 **Important**: Workflow construction is expensive and should happen during service initialization, not inside endpoint handlers. Build your workflows once and reuse them across requests.
 
+**💡 Tip**: Think of workflows like Lego blocks—each step is a reusable piece you can snap together in different combinations. Build once, use everywhere. Compose them into larger workflows without repetition. See: [Workflow Composition](#workflow-composition).
+
 ```go
 package main
 

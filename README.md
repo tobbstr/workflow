@@ -46,7 +46,7 @@ This library is **not** suitable for:
 - **Distributed Transactions**: Workflows requiring saga pattern, compensation logic, or distributed rollback
 - **Simple Sequential Operations**: Basic pipelines where the overhead is not justified
 - **Existing Workflow Engines**: If you already use Temporal, Cadence, or similar platforms
-- **Workflow Versioning**: Workflows that need migration between versions or A/B testing
+- **Workflow Versioning & Migration**: Managing multiple versions of workflow structure, migrating between versions, or A/B testing at the workflow architecture level (different step sequences, retry policies, etc.). *Note: A/B testing business logic variants within a workflow using `If` branching is supported.*
 - **Built-In Resilience Patterns**: Requiring circuit breakers or rate limiting as core library features
 - **Stateful Long-Term Tracking**: Needing persistent execution history or audit trails
 

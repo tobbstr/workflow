@@ -18,6 +18,43 @@ A type-safe, fluent workflow library designed for HTTP and gRPC endpoint impleme
 - 🎯 **Context-Aware**: Full `context.Context` support for cancellation and deadlines
 - 🧩 **Fluent API**: Clean, readable workflow definitions
 
+## When to Use This Library
+
+This library is ideal for:
+
+- **Request-Response Endpoints**: Building clean, maintainable workflows in HTTP or gRPC handlers
+- **Complex Business Logic**: Orchestrating multiple steps with conditional branches and error recovery
+- **Type-Safe Composition**: Ensuring compile-time type safety while chaining operations
+- **Retry Logic**: Handling transient failures with configurable exponential backoff
+- **Graceful Error Handling**: Allowing specific errors to flow through without failing the entire workflow
+- **Parallel Operations**: Running independent steps concurrently and merging results
+- **Observability**: Adding metrics, logging, and tracing hooks without invasive instrumentation
+- **Nested Workflows**: Building tree-like structures for complex, reusable business logic
+
+**Example Use Cases:**
+- Payment processing with validation, authorization, and settlement steps
+- User registration with email verification and notification workflows
+- Data enrichment pipelines combining multiple data sources
+- Complex routing decisions based on runtime conditions
+- Fallback patterns (try primary, fall back to secondary)
+
+## When Not to Use This Library
+
+This library is **not** suitable for:
+
+- **Long-Running Workflows**: Workflows that take hours or days and need persistence across restarts
+- **Distributed Transactions**: Workflows requiring saga pattern, compensation logic, or distributed rollback
+- **Simple Sequential Operations**: Basic pipelines where the overhead is not justified
+- **Existing Workflow Engines**: If you already use Temporal, Cadence, or similar platforms
+- **Workflow Versioning**: Workflows that need migration between versions or A/B testing
+- **Built-In Resilience Patterns**: Requiring circuit breakers or rate limiting as core library features
+- **Stateful Long-Term Tracking**: Needing persistent execution history or audit trails
+
+**Alternative Solutions:**
+- **Temporal, Cadence, or Airflow**: For durable, distributed workflows with persistence
+- **Simple Functions**: For straightforward sequential logic without conditional branching
+- **Custom Handlers**: For one-off workflows that don't warrant reusability
+
 ## Installation
 
 ```bash
@@ -547,16 +584,6 @@ Current test coverage: **91.2%**
 - **Observable**: Opt-in metrics and tracing without compromising simplicity
 - **Idiomatic**: Follows Go best practices and microservices patterns
 
-## API Documentation
-
-All exported types and functions have comprehensive godoc comments with examples. View the full API documentation:
-
-```bash
-go doc github.com/tobbstr/workflow
-```
-
-Or browse online at: [pkg.go.dev/github.com/tobbstr/workflow](https://pkg.go.dev/github.com/tobbstr/workflow)
-
 ## Non-Goals
 
 The following are explicitly out of scope:
@@ -566,6 +593,16 @@ The following are explicitly out of scope:
 - Async/long-running workflows (only synchronous, short-lived workflows)
 - Workflow versioning or migration
 - Built-in circuit breakers or rate limiting
+
+## API Documentation
+
+All exported types and functions have comprehensive godoc comments with examples. View the full API documentation:
+
+```bash
+go doc github.com/tobbstr/workflow
+```
+
+Or browse online at: [pkg.go.dev/github.com/tobbstr/workflow](https://pkg.go.dev/github.com/tobbstr/workflow)
 
 ## Contributing
 
